@@ -1,9 +1,9 @@
 import os
+import uuid
 import cohere
 import fitz
 from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
@@ -26,13 +26,16 @@ class VectorStore:
 
         self.retrieve_top_k = 10
         self.rerank_top_k = 3
-        self.index_name = "rag-qa-bot"
+
+        # 🔥 UNIQUE index per document
+        self.index_name = f"rag-qa-{uuid.uuid4().hex[:8]}"
 
         self.load_pdf()
         self.split_text()
         self.embed_chunks()
         self.index_chunks()
 
+    # ---------- PDF ----------
     def load_pdf(self):
         self.pdf_text = self.extract_text_from_pdf(self.pdf_path)
 
@@ -43,6 +46,7 @@ class VectorStore:
                 text += page.get_text("text")
         return text
 
+    # ---------- CHUNKING ----------
     def split_text(self, chunk_size=1000):
         sentences = self.pdf_text.split(". ")
         current_chunk = ""
@@ -57,6 +61,7 @@ class VectorStore:
         if current_chunk:
             self.chunks.append(current_chunk.strip())
 
+    # ---------- EMBEDDING ----------
     def embed_chunks(self, batch_size=90):
         for i in range(0, len(self.chunks), batch_size):
             batch = self.chunks[i:i + batch_size]
@@ -68,21 +73,21 @@ class VectorStore:
 
             self.embeddings.extend(embeddings)
 
+    # ---------- PINECONE ----------
     def index_chunks(self):
         pc = Pinecone(api_key=self.pinecone_api_key)
 
         dimension = len(self.embeddings[0])
 
-        if self.index_name not in pc.list_indexes().names():
-            pc.create_index(
-                name=self.index_name,
-                dimension=dimension,
-                metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="aws",
-                    region="us-east-1"
-                )
+        pc.create_index(
+            name=self.index_name,
+            dimension=dimension,
+            metric="cosine",
+            spec=ServerlessSpec(
+                cloud="aws",
+                region="us-east-1"
             )
+        )
 
         self.index = pc.Index(self.index_name)
 
@@ -93,6 +98,7 @@ class VectorStore:
 
         self.index.upsert(vectors=vectors)
 
+    # ---------- RETRIEVAL ----------
     def retrieve(self, query: str) -> list:
         query_embedding = self.co.embed(
             texts=[query],
@@ -108,10 +114,13 @@ class VectorStore:
 
         docs = [match["metadata"]["text"] for match in results["matches"]]
 
+        if not docs:
+            return []
+
         reranked = self.co.rerank(
             query=query,
             documents=docs,
-            top_n=self.rerank_top_k,
+            top_n=min(self.rerank_top_k, len(docs)),
             model="rerank-v3.5"
         )
 
