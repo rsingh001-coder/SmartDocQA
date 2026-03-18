@@ -27,7 +27,7 @@ class Chatbot:
         )
 
         retrieved_docs = []
-        seen = set()  # 👈 prevent duplicates
+        seen = set()  
 
         if response.search_queries:
             for query in response.search_queries:
