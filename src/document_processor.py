@@ -27,7 +27,6 @@ class VectorStore:
         self.retrieve_top_k = 10
         self.rerank_top_k = 3
 
-        # 🔥 UNIQUE index per document
         self.index_name = f"rag-qa-{uuid.uuid4().hex[:8]}"
 
         self.load_pdf()
@@ -35,7 +34,6 @@ class VectorStore:
         self.embed_chunks()
         self.index_chunks()
 
-    # ---------- PDF ----------
     def load_pdf(self):
         self.pdf_text = self.extract_text_from_pdf(self.pdf_path)
 
@@ -46,7 +44,6 @@ class VectorStore:
                 text += page.get_text("text")
         return text
 
-    # ---------- CHUNKING ----------
     def split_text(self, chunk_size=1000):
         sentences = self.pdf_text.split(". ")
         current_chunk = ""
@@ -60,8 +57,6 @@ class VectorStore:
 
         if current_chunk:
             self.chunks.append(current_chunk.strip())
-
-    # ---------- EMBEDDING ----------
     def embed_chunks(self, batch_size=90):
         for i in range(0, len(self.chunks), batch_size):
             batch = self.chunks[i:i + batch_size]
@@ -73,7 +68,7 @@ class VectorStore:
 
             self.embeddings.extend(embeddings)
 
-    # ---------- PINECONE ----------
+
     def index_chunks(self):
         pc = Pinecone(api_key=self.pinecone_api_key)
 
@@ -98,7 +93,6 @@ class VectorStore:
 
         self.index.upsert(vectors=vectors)
 
-    # ---------- RETRIEVAL ----------
     def retrieve(self, query: str) -> list:
         query_embedding = self.co.embed(
             texts=[query],
