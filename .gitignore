@@ -3,3 +3,4 @@ __pycache__/
 .env
 uploaded_document.pdf
 .streamlit/
+*.pyc
