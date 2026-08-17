@@ -1,5 +1,4 @@
 import os
-import uuid
 import cohere
 import fitz
 from pinecone import Pinecone, ServerlessSpec
@@ -16,34 +15,45 @@ class VectorStore:
         pinecone_api_key = os.getenv("PINECONE_API_KEY")
 
         if not cohere_api_key or not pinecone_api_key:
-            raise ValueError("COHERE_API_KEY or PINECONE_API_KEY not found in .env file")
+            raise ValueError(
+                "COHERE_API_KEY or PINECONE_API_KEY not found"
+            )
 
         self.co = cohere.Client(cohere_api_key)
-        self.pinecone_api_key = pinecone_api_key
-
-        self.chunks = []
-        self.embeddings = []
 
         self.retrieve_top_k = 10
         self.rerank_top_k = 3
 
-        self.index_name = f"rag-qa-{uuid.uuid4().hex[:8]}"
+        # Fixed Pinecone index
+        self.index_name = "smartdocqa"
+
+        # Unique namespace for this uploaded document
+        self.namespace = os.path.splitext(
+            os.path.basename(pdf_path)
+        )[0].replace(" ", "_")
+
+        self.chunks = []
+        self.embeddings = []
 
         self.load_pdf()
         self.split_text()
         self.embed_chunks()
         self.index_chunks()
 
+    # ---------- PDF ----------
     def load_pdf(self):
         self.pdf_text = self.extract_text_from_pdf(self.pdf_path)
 
     def extract_text_from_pdf(self, pdf_path: str) -> str:
         text = ""
+
         with fitz.open(pdf_path) as pdf:
             for page in pdf:
                 text += page.get_text("text")
+
         return text
 
+    # ---------- CHUNKING ----------
     def split_text(self, chunk_size=1000):
         sentences = self.pdf_text.split(". ")
         current_chunk = ""
@@ -52,48 +62,73 @@ class VectorStore:
             if len(current_chunk) + len(sentence) <= chunk_size:
                 current_chunk += sentence + ". "
             else:
-                self.chunks.append(current_chunk.strip())
+                if current_chunk.strip():
+                    self.chunks.append(current_chunk.strip())
+
                 current_chunk = sentence + ". "
 
-        if current_chunk:
+        if current_chunk.strip():
             self.chunks.append(current_chunk.strip())
+
+    # ---------- EMBEDDING ----------
     def embed_chunks(self, batch_size=90):
         for i in range(0, len(self.chunks), batch_size):
+
             batch = self.chunks[i:i + batch_size]
-            embeddings = self.co.embed(
+
+            response = self.co.embed(
                 texts=batch,
                 model="embed-english-v3.0",
                 input_type="search_document"
-            ).embeddings
-
-            self.embeddings.extend(embeddings)
-
-
-    def index_chunks(self):
-        pc = Pinecone(api_key=self.pinecone_api_key)
-
-        dimension = len(self.embeddings[0])
-
-        pc.create_index(
-            name=self.index_name,
-            dimension=dimension,
-            metric="cosine",
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
             )
+
+            self.embeddings.extend(response.embeddings)
+
+    # ---------- PINECONE ----------
+    def index_chunks(self):
+
+        pc = Pinecone(
+            api_key=os.getenv("PINECONE_API_KEY")
         )
+
+        # Check whether index already exists
+        existing_indexes = pc.list_indexes().names()
+
+        if self.index_name not in existing_indexes:
+
+            dimension = len(self.embeddings[0])
+
+            pc.create_index(
+                name=self.index_name,
+                dimension=dimension,
+                metric="cosine",
+                spec=ServerlessSpec(
+                    cloud="aws",
+                    region="us-east-1"
+                )
+            )
 
         self.index = pc.Index(self.index_name)
 
         vectors = [
-            (str(i), self.embeddings[i], {"text": self.chunks[i]})
+            (
+                str(i),
+                self.embeddings[i],
+                {
+                    "text": self.chunks[i]
+                }
+            )
             for i in range(len(self.chunks))
         ]
 
-        self.index.upsert(vectors=vectors)
+        self.index.upsert(
+            vectors=vectors,
+            namespace=self.namespace
+        )
 
+    # ---------- RETRIEVAL ----------
     def retrieve(self, query: str) -> list:
+
         query_embedding = self.co.embed(
             texts=[query],
             model="embed-english-v3.0",
@@ -101,12 +136,16 @@ class VectorStore:
         ).embeddings[0]
 
         results = self.index.query(
+            namespace=self.namespace,
             vector=query_embedding,
             top_k=self.retrieve_top_k,
             include_metadata=True
         )
 
-        docs = [match["metadata"]["text"] for match in results["matches"]]
+        docs = [
+            match["metadata"]["text"]
+            for match in results["matches"]
+        ]
 
         if not docs:
             return []
@@ -118,4 +157,7 @@ class VectorStore:
             model="rerank-v3.5"
         )
 
-        return [docs[item.index] for item in reranked.results]
+        return [
+            docs[item.index]
+            for item in reranked.results
+        ]
