@@ -1,7 +1,7 @@
 import os
 import cohere
 import fitz
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,20 +20,18 @@ class VectorStore:
             )
 
         self.co = cohere.Client(cohere_api_key)
+        self.pinecone_api_key = pinecone_api_key
+
+        self.chunks = []
+        self.embeddings = []
 
         self.retrieve_top_k = 10
         self.rerank_top_k = 3
 
-        # Fixed Pinecone index
-        self.index_name = "smartdocqa"
-
-        # Unique namespace for this uploaded document
+        # Use PDF filename as namespace
         self.namespace = os.path.splitext(
             os.path.basename(pdf_path)
         )[0].replace(" ", "_")
-
-        self.chunks = []
-        self.embeddings = []
 
         self.load_pdf()
         self.split_text()
@@ -73,42 +71,24 @@ class VectorStore:
     # ---------- EMBEDDING ----------
     def embed_chunks(self, batch_size=90):
         for i in range(0, len(self.chunks), batch_size):
-
             batch = self.chunks[i:i + batch_size]
 
-            response = self.co.embed(
+            embeddings = self.co.embed(
                 texts=batch,
                 model="embed-english-v3.0",
                 input_type="search_document"
-            )
+            ).embeddings
 
-            self.embeddings.extend(response.embeddings)
+            self.embeddings.extend(embeddings)
 
     # ---------- PINECONE ----------
     def index_chunks(self):
-
         pc = Pinecone(
-            api_key=os.getenv("PINECONE_API_KEY")
+            api_key=self.pinecone_api_key
         )
 
-        # Check whether index already exists
-        existing_indexes = pc.list_indexes().names()
-
-        if self.index_name not in existing_indexes:
-
-            dimension = len(self.embeddings[0])
-
-            pc.create_index(
-                name=self.index_name,
-                dimension=dimension,
-                metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="aws",
-                    region="us-east-1"
-                )
-            )
-
-        self.index = pc.Index(self.index_name)
+        # Use existing Pinecone index
+        self.index = pc.Index("rag-qa-bot")
 
         vectors = [
             (
@@ -128,7 +108,6 @@ class VectorStore:
 
     # ---------- RETRIEVAL ----------
     def retrieve(self, query: str) -> list:
-
         query_embedding = self.co.embed(
             texts=[query],
             model="embed-english-v3.0",
